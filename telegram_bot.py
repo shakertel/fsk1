@@ -6,7 +6,7 @@ from engine import FSKEngine, SearchCancelled
 SEARCH_TIMEOUT=15*60
 PAGE_SIZE=3
 WELCOME=(
-"سلام به ربات فیلم یاب سرچر کردستان خوش آمدید! 🎬\n\n"
+"سلام به ربات فیلم  سرچر کردستان خوش آمدید! 🎬\n\n"
 "حس و حال و فیلمی که دنبالش هستید را به این سبک وارد کنید:\n\n"
 "«الان حالم خوب نیست شکست عشقی خوردم دنبال یه فیلمم که بتونم سرگرم بشم و حالم خوب شه.»\n\n"
 "حالا درخواست خودتان را بفرستید."
@@ -60,7 +60,7 @@ async def text_handler(update:Update,context:ContextTypes.DEFAULT_TYPE):
     states[uid]={"stage":"confirm","query":q,"last_activity":time.monotonic()}
     await update.message.reply_text(
         "درخواست شما:\n\n"+q+"\n\nآیا این پیام نهایی شماست؟",
-        reply_markup=keyboard([("تأیید و جستجو ✅","confirm")],[("لغو ❌","cancel")])
+        reply_markup=keyboard([("تأیید و جستجو بژی کوردیستان✅","confirm")],[("لغو ❌","cancel")])
     )
 
 async def show_page(chat_id,uid,context):
