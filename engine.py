@@ -1,4 +1,4 @@
-import os, json, threading
+import os, json, threading, time
 from supabase import create_client
 from google import genai
 
@@ -62,21 +62,45 @@ class FSKEngine:
     def gemini_call(self,prompt,cancel_event=None):
         self._check(cancel_event)
         last=None
-        # One pass through all 14 configured keys. The next call begins from the last good/current key.
+
         for _ in range(len(self.keys)):
             self._check(cancel_event)
+
             with self._key_lock:
                 idx=self._key_index % len(self.keys)
-            try:
-                client=genai.Client(api_key=self.keys[idx])
-                response=client.models.generate_content(model=MODEL,contents=prompt)
-                text=response.text
-                if not text: raise RuntimeError("Empty Gemini response")
-                return text
-            except Exception as e:
-                last=e
-                with self._key_lock:
-                    self._key_index=(idx+1)%len(self.keys)
+
+            result={"text":None,"error":None}
+
+            def call():
+                try:
+                    print("GEMINI TRY KEY", idx+1, flush=True)
+                    client=genai.Client(api_key=self.keys[idx])
+                    response=client.models.generate_content(
+                        model=MODEL,
+                        contents=prompt
+                    )
+                    result["text"]=response.text
+                except Exception as e:
+                    result["error"]=e
+
+            t=threading.Thread(target=call,daemon=True)
+            start_time=time.time()
+            t.start()
+            t.join(timeout=20)
+
+            if t.is_alive():
+                last=RuntimeError("Gemini timeout after 20 seconds")
+                print("GEMINI TIMEOUT KEY",idx+1,flush=True)
+            elif result["text"]:
+                print("GEMINI OK KEY",idx+1,"TIME",round(time.time()-start_time,2),"s",flush=True)
+                return result["text"]
+            else:
+                last=result["error"] or RuntimeError("Empty Gemini response")
+                print("GEMINI FAIL KEY",idx+1,repr(last),flush=True)
+
+            with self._key_lock:
+                self._key_index=(idx+1)%len(self.keys)
+
         raise RuntimeError(f"Gemini unavailable: {last}")
 
     def search(self,user_query,cancel_event=None):
