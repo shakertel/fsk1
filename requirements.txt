@@ -2,5 +2,5 @@ python-telegram-bot==22.8
 supabase==2.31.0
 google-genai==2.25.0
 flask==3.1.2
-Pillow
-requests
+Pillow==11.1.0
+requests==2.32.3
