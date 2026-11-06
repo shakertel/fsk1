@@ -11,6 +11,8 @@ FINAL_CANDIDATE_LIMIT=100
 
 class SearchCancelled(Exception): pass
 
+class ScreeningPoolExhausted(RuntimeError): pass
+
 class FSKEngine:
     def __init__(self):
         url=os.environ["SUPABASE_URL"]
@@ -132,6 +134,52 @@ class FSKEngine:
         )
         raise RuntimeError(f"Gemini pool {pool_id+1} unavailable: {last}")
 
+    def _wait_for_retry(self,seconds,cancel_event,reason):
+        print(f"=== {reason} | WAIT {seconds}s ===",flush=True)
+        deadline=time.monotonic()+seconds
+        while True:
+            self._check(cancel_event)
+            remaining=deadline-time.monotonic()
+            if remaining<=0:
+                return
+            if cancel_event is not None:
+                cancel_event.wait(min(1.0,remaining))
+            else:
+                time.sleep(min(1.0,remaining))
+
+    def _screening_call(self,prompt,cancel_event,pool_id):
+        # Each gemini_call tries the entire original pool once.
+        # A successful round returns immediately; existing prompts are unchanged.
+        last=None
+        for round_no in range(1,5):
+            self._check(cancel_event)
+            print(f"=== SCREENING POOL {pool_id+1} | ROUND {round_no}/4 ===",flush=True)
+            try:
+                return self.gemini_call(prompt,cancel_event,pool_id=pool_id)
+            except SearchCancelled:
+                raise
+            except RuntimeError as exc:
+                last=exc
+                print(f"=== SCREENING POOL {pool_id+1} | FULL ROUND FAILED {round_no}/4 ===",flush=True)
+
+        self._wait_for_retry(90,cancel_event,f"SCREENING POOL {pool_id+1} COOLDOWN")
+        for round_no in range(1,3):
+            if round_no==2:
+                self._wait_for_retry(10,cancel_event,f"SCREENING POOL {pool_id+1} RECOVERY GAP")
+            self._check(cancel_event)
+            print(f"=== SCREENING POOL {pool_id+1} | RECOVERY ROUND {round_no}/2 ===",flush=True)
+            try:
+                return self.gemini_call(prompt,cancel_event,pool_id=pool_id)
+            except SearchCancelled:
+                raise
+            except RuntimeError as exc:
+                last=exc
+                print(f"=== SCREENING POOL {pool_id+1} | RECOVERY ROUND FAILED {round_no}/2 ===",flush=True)
+
+        raise ScreeningPoolExhausted(
+            f"Pool {pool_id+1}: four failed rounds, 90s cooldown and two recovery rounds exhausted"
+        ) from last
+
     def _run_batch(self,i,batch,user_query,intent,cancel_event,pool_id):
         self._check(cancel_event)
         print(
@@ -188,7 +236,7 @@ DATA:
 ],ensure_ascii=False)}
 """
         got=self.clean_json(
-            self.gemini_call(prompt,cancel_event,pool_id=pool_id)
+            self._screening_call(prompt,cancel_event,pool_id=pool_id)
         )
         if not isinstance(got,list):
             got=[]
@@ -202,6 +250,7 @@ DATA:
     def _run_lane(self,jobs,user_query,intent,cancel_event,pool_id):
         """Each lane is sequential internally; the two lanes run in parallel."""
         lane_results=[]
+        screened=0
         for i,batch in jobs:
             self._check(cancel_event)
             try:
@@ -209,8 +258,18 @@ DATA:
                     i,batch,user_query,intent,cancel_event,pool_id
                 )
                 lane_results.extend(got)
+                screened+=len(batch)
             except SearchCancelled:
                 raise
+            except ScreeningPoolExhausted:
+                print(
+                    f"=== SCREENING PARTIAL | POOL {pool_id+1} | "
+                    f"SCREENED {screened}/{sum(len(b) for _,b in jobs)} | "
+                    f"CANDIDATES {len(lane_results)} | STOPPED AT OFFSET {i} | "
+                    "RETRY BUDGET EXHAUSTED; KEEPING COLLECTED CANDIDATES ===",
+                    flush=True
+                )
+                break
             except Exception as e:
                 print(
                     f"BATCH ERROR {i} | POOL {pool_id+1} | {repr(e)}",
@@ -390,6 +449,7 @@ JSON فقط:
 ]
 """
         print('=== FINAL GEMINI START ===',flush=True)
+        self._wait_for_retry(30,cancel_event,"BEFORE FINAL JUDGMENT")
         ranking=self.clean_json(
             self.gemini_call(final_prompt,cancel_event,pool_id=1)
         )
